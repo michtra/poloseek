@@ -85,6 +85,8 @@ Request a parking pass reservation
 - `MM/DD HH:MM`
 - `HH:MM` or `H:MM AM/PM`
 
+**Owner only:** - Optional third argument `<user>` to request on a user's behalf
+
 **Examples:**
 - `/request 2024-03-15 09:00 2024-03-15 17:00`
 - `/request 3/15 9:00 AM 3/15 5:00 PM`
