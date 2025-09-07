@@ -2,7 +2,7 @@
 import discord
 from discord.ext import commands
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from config import OWNER_ID, DEFAULT_OWNER_ID, CDT
 from utils import ensure_cdt_timezone, parse_datetime_input
@@ -106,9 +106,26 @@ def setup_commands(bot: 'PoloSeek'):
             await interaction.followup.send(embed=embed)
 
     @bot.tree.command(name="request", description="Request a parking pass reservation")
-    async def request_command(interaction: discord.Interaction, start_time: str, end_time: str):
+    async def request_command(interaction: discord.Interaction, start_time: str, end_time: str, user: Optional[discord.Member] = None):
         """Request a parking pass reservation"""
         try:
+            # determine who the reservation is for
+            if user is not None:
+                # only bot owner can request on behalf of others
+                if interaction.user.id != OWNER_ID:
+                    embed = discord.Embed(
+                        title="Access Denied",
+                        description="Only the bot owner can request reservations on behalf of other users.",
+                        color=discord.Color.red()
+                    )
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    return
+                target_user = user
+                is_owner_request = True
+            else:
+                target_user = interaction.user
+                is_owner_request = False
+            
             # parse time inputs
             now = datetime.now(CDT)
             start_dt = parse_datetime_input(start_time, now)
@@ -145,30 +162,37 @@ def setup_commands(bot: 'PoloSeek'):
                 
                 embed = discord.Embed(
                     title="Time Conflict",
-                    description=f"Your requested time conflicts with existing approved reservations:\n\n" + "\n".join(conflict_list),
+                    description=f"The requested time conflicts with existing approved reservations:\n\n" + "\n".join(conflict_list),
                     color=discord.Color.orange()
                 )
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
             
             # create reservation
-            create_reservation(interaction.user.id, start_dt, end_dt)
+            create_reservation(target_user.id, start_dt, end_dt)
+
+            # auto-approve if request is made by the owner
+            if interaction.user.id == OWNER_ID:
+                approve_reservation_by_details(target_user.id, start_dt.isoformat())
+                approval_status = "**Status:** ✅ AUTOMATICALLY APPROVED"
+            else:
+                approval_status = "**Status:** 🟡 PENDING APPROVAL"
             
-            # get current owner for notification
-            current_owner = get_current_owner()
+            # create description based on who made the request
+            if is_owner_request:
+                description = f"**Requested by:** <@{interaction.user.id}> for <@{target_user.id}>\n**Start:** {start_dt.strftime('%B %d, %Y at %I:%M %p CDT')}\n**End:** {end_dt.strftime('%B %d, %Y at %I:%M %p CDT')}\n{approval_status}"
+                mention_message = f"<@{target_user.id}>, a parking pass reservation has been created for you!"
+            else:
+                description = f"**Requested by:** <@{target_user.id}>\n**Start:** {start_dt.strftime('%B %d, %Y at %I:%M %p CDT')}\n**End:** {end_dt.strftime('%B %d, %Y at %I:%M %p CDT')}\n{approval_status}"
+                mention_message = f"<@{OWNER_ID}>, you have a new parking pass request!"
             
             embed = discord.Embed(
                 title="Reservation Created",
-                description=f"**Requested by:** <@{interaction.user.id}>\n**Start:** {start_dt.strftime('%B %d, %Y at %I:%M %p CDT')}\n**End:** {end_dt.strftime('%B %d, %Y at %I:%M %p CDT')}",
+                description=description,
                 color=discord.Color.blue()
             )
             
-            # send the embed first
-            await interaction.response.send_message(embed=embed)
-            
-            # send a separate message with the mention
-            mention_message = f"<@{OWNER_ID}>, you have a new parking pass request!"
-            await interaction.followup.send(mention_message)
+            await interaction.response.send_message(content=mention_message, embed=embed)
             
         except ValueError as e:
             embed = discord.Embed(
@@ -266,7 +290,7 @@ def setup_commands(bot: 'PoloSeek'):
             if not target_memo:
                 embed = discord.Embed(
                     title="Error",
-                    description=f"No vehicle memo found for <@{user.id}>. User must have a registered vehicle.",
+                    description=f"No vehicle memo found for {user.display_name}. User must have a registered vehicle.",
                     color=discord.Color.red()
                 )
                 await interaction.followup.send(embed=embed)
@@ -284,11 +308,13 @@ def setup_commands(bot: 'PoloSeek'):
                 
                 embed = discord.Embed(
                     title="Parking Pass Transferred",
-                    description=f"Parking pass has been given to <@{user.id}>\n**Vehicle:** {target_memo}",
+                    description=f"Parking pass has been given to {user.display_name}\n**Vehicle:** {target_memo}",
                     color=discord.Color.green()
                 )
                 
-                await interaction.followup.send(embed=embed)
+                ping_message = f"<@{user.id}>, you have been given the parking pass!"
+                await interaction.followup.send(content=ping_message, embed=embed)
+                
             else:
                 embed = discord.Embed(
                     title="Error",
@@ -326,7 +352,7 @@ def setup_commands(bot: 'PoloSeek'):
             if not next_reservation:
                 embed = discord.Embed(
                     title="No Reservation Found",
-                    description=f"<@{user.id}> has no pending reservations to approve.",
+                    description=f"{user.display_name} has no pending reservations to approve.",
                     color=discord.Color.orange()
                 )
                 await interaction.followup.send(embed=embed)
@@ -381,12 +407,12 @@ def setup_commands(bot: 'PoloSeek'):
             
             embed = discord.Embed(
                 title="Reservation Approved",
-                description=f"**Approved for:** <@{user.id}>{memo_text}\n**Start:** {start.strftime('%B %d, %Y at %I:%M %p CDT')}\n**End:** {end.strftime('%B %d, %Y at %I:%M %p CDT')}{transfer_msg}",
+                description=f"**Approved for:** {user.display_name}{memo_text}\n**Start:** {start.strftime('%B %d, %Y at %I:%M %p CDT')}\n**End:** {end.strftime('%B %d, %Y at %I:%M %p CDT')}{transfer_msg}",
                 color=discord.Color.green()
             )
             
-            await interaction.followup.send(embed=embed)
-            await interaction.followup.send(f"<@{user.id}>, your reservation has been approved!")
+            ping_message = f"<@{user.id}>, your reservation has been approved!"
+            await interaction.followup.send(content=ping_message, embed=embed)
             
         except Exception as e:
             embed = discord.Embed(

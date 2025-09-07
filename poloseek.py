@@ -242,8 +242,8 @@ class PoloSeek(commands.Bot):
                 color=discord.Color.blue()
             )
         
-        await channel.send(embed=embed)
-        await channel.send(f"<@{to_user_id}>, your scheduled reservation is now active!")
+        ping_message = f"<@{to_user_id}>, your scheduled reservation is now active!"
+        await channel.send(content=ping_message, embed=embed)
     
     async def notify_return_to_default(self, from_user_id):
         """Send notification about return to default owner"""
@@ -278,8 +278,9 @@ class PoloSeek(commands.Bot):
             description=f"Pass transferred to {new_username} for scheduled approved reservation.\n\n**Reservation:** {start_time.strftime('%m/%d %I:%M %p')} - {end_time.strftime('%m/%d %I:%M %p')}",
             color=discord.Color.green()
         )
-        await channel.send(embed=embed)
-        await channel.send(f"<@{reservation['user_id']}>, your scheduled reservation is now active!")
+        
+        ping_message = f"<@{reservation['user_id']}>, your scheduled reservation is now active!"
+        await channel.send(content=ping_message, embed=embed)
 
     async def get_user_display_name(self, user_id: int) -> str:
         """Helper method to get user display name with fallback"""

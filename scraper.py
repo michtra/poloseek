@@ -1,3 +1,4 @@
+import inspect
 import os
 import time
 import traceback
@@ -41,6 +42,8 @@ class Scraper:
                 if hasattr(self.notify, '__call__'):
                     if hasattr(self.notify, 'send'):
                         await self.notify.send(message)
+                    elif inspect.iscoroutinefunction(self.notify):
+                        await self.notify(message)
                     else:
                         self.notify(message)
         except Exception as e:
