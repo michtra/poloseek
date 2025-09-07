@@ -124,8 +124,8 @@ def get_reservation_status(current_time: datetime) -> Optional[Dict]:
     cursor.execute('''
         SELECT user_id, start_time, end_time 
         FROM reservations 
-        WHERE active_status = TRUE AND datetime(end_time) <= datetime(?)
-    ''', (current_time.isoformat(),))
+        WHERE active_status = TRUE AND substr(end_time, 1, 19) <= ?
+    ''', (current_time.replace(tzinfo=None).isoformat(),))
     expired = cursor.fetchall()
     
     # get next approved reservation that should be active now or next in queue
@@ -134,10 +134,10 @@ def get_reservation_status(current_time: datetime) -> Optional[Dict]:
         FROM reservations 
         WHERE active_status = TRUE 
         AND approved = TRUE 
-        AND datetime(end_time) > datetime(?)
-        ORDER BY datetime(start_time) 
+        AND substr(end_time, 1, 19) > ?
+        ORDER BY substr(start_time, 1, 19) 
         LIMIT 1
-    ''', (current_time.isoformat(),))
+    ''', (current_time.replace(tzinfo=None).isoformat(),))
     next_approved = cursor.fetchone()
     
     conn.close()
@@ -213,12 +213,12 @@ def create_reservation(user_id: int, start_time: datetime, end_time: datetime):
     conn.commit()
     conn.close()
 
-def get_active_reservations() -> List[Dict]:
-    """Get all active reservations"""
+def get_reservations() -> List[Dict]:
+    """Get all reservations"""
     conn = sqlite3.connect('poloseek.db')
     cursor = conn.cursor()
     cursor.execute(
-        'SELECT user_id, start_time, end_time, approved FROM reservations WHERE active_status = TRUE ORDER BY datetime(start_time)'
+        'SELECT user_id, start_time, end_time, approved FROM reservations ORDER BY datetime(start_time)'
     )
     reservations = cursor.fetchall()
     conn.close()
@@ -346,8 +346,8 @@ def get_expired_reservations(current_time: datetime) -> List[Dict]:
     conn = sqlite3.connect('poloseek.db')
     cursor = conn.cursor()
     cursor.execute(
-        'SELECT user_id, start_time, end_time FROM reservations WHERE active_status = TRUE AND datetime(end_time) <= datetime(?)',
-        (current_time.isoformat(),)
+        'SELECT user_id, start_time, end_time FROM reservations WHERE active_status = TRUE AND substr(end_time, 1, 19) <= ?',
+        (current_time.replace(tzinfo=None).isoformat(),)
     )
     expired = cursor.fetchall()
     conn.close()
@@ -397,3 +397,22 @@ def is_reservation_ready_to_start(reservation: Dict, current_time: datetime) -> 
     # add small buffer for edge cases
     buffer_time = current_time - timedelta(seconds=1)
     return start_time <= buffer_time
+
+def cleanup_old_reservations(cutoff_date: datetime):
+    """Delete old inactive reservations from the database"""
+    conn = sqlite3.connect('poloseek.db')
+    cursor = conn.cursor()
+    
+    # delete inactive reservations older than cutoff date
+    cursor.execute('''
+        DELETE FROM reservations 
+        WHERE active_status = FALSE 
+        AND datetime(end_time) < datetime(?)
+    ''', (cutoff_date.isoformat(),))
+    
+    deleted_count = cursor.rowcount
+    conn.commit()
+    conn.close()
+    
+    print(f"Deleted {deleted_count} old reservation records")
+    return deleted_count

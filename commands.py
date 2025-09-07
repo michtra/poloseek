@@ -8,10 +8,11 @@ from config import OWNER_ID, DEFAULT_OWNER_ID, CDT
 from utils import ensure_cdt_timezone, parse_datetime_input
 from database import (
     get_current_owner, update_parking_pass_owner, transfer_pass_with_lock,
-    check_reservation_conflicts, create_reservation, get_active_reservations,
+    check_reservation_conflicts, create_reservation, get_reservations,
     get_user_next_unapproved_reservation, approve_reservation_by_details,
     get_user_memo
 )
+from scraper import Scraper
 
 if TYPE_CHECKING:
     from poloseek import PoloSeek
@@ -61,7 +62,7 @@ def setup_commands(bot: 'PoloSeek'):
 
     @bot.tree.command(name="refresh", description="Refresh parking pass data (Owner only)")
     async def refresh_command(interaction: discord.Interaction):
-        """Refresh parking pass data - placeholder for web scraping"""
+        """Refresh parking pass data from transport scraper"""
         if interaction.user.id != OWNER_ID:
             embed = discord.Embed(
                 title="Access Denied",
@@ -74,15 +75,24 @@ def setup_commands(bot: 'PoloSeek'):
         try:
             await interaction.response.defer()
             
+            # create transport automation with notification callback
+            transport = Scraper(notification_callback=interaction.followup)
+            
+            # get current user from transport scraper
+            current_user_memo = await transport.refresh_current_user()
+            
+            # find user ID by memo
             current_owner = get_current_owner()
             if current_owner:
-                update_parking_pass_owner(current_owner['current_owner_id'])
+                current_memo = get_user_memo(current_owner['current_owner_id'])
+                if current_memo != current_user_memo:
+                    await interaction.followup.send(f"Memo mismatch detected - database shows '{current_memo}' but transport shows '{current_user_memo}'")
             
             await bot.update_status()
             
             embed = discord.Embed(
                 title="Refresh Complete",
-                description="Parking pass data has been updated successfully.\n*Note: Web scraping is currently a placeholder.*",
+                description=f"Current parking pass owner memo: {current_user_memo}",
                 color=discord.Color.green()
             )
             await interaction.followup.send(embed=embed)
@@ -177,14 +187,14 @@ def setup_commands(bot: 'PoloSeek'):
 
     @bot.tree.command(name="reservations", description="Show all active parking pass reservations")
     async def reservations_command(interaction: discord.Interaction):
-        """Display all active reservations with approval status"""
+        """Display all reservations with status"""
         try:
-            reservations = get_active_reservations()
+            reservations = get_reservations()
             
             if not reservations:
                 embed = discord.Embed(
                     title="Parking Pass Reservations",
-                    description="No active reservations found.",
+                    description="No reservations found.",
                     color=discord.Color.blue()
                 )
                 await interaction.response.send_message(embed=embed)
@@ -249,30 +259,43 @@ def setup_commands(bot: 'PoloSeek'):
             return
         
         try:
-            # update parking pass owner with locking
+            await interaction.response.defer()
+            
+            # get target user memo
+            target_memo = get_user_memo(user.id)
+            if not target_memo:
+                embed = discord.Embed(
+                    title="Error",
+                    description=f"No vehicle memo found for <@{user.id}>. User must have a registered vehicle.",
+                    color=discord.Color.red()
+                )
+                await interaction.followup.send(embed=embed)
+                return
+            
+            # update transport scraper first
+            transport = Scraper(notification_callback=interaction.followup)
+            await transport.update_parking_pass(target_memo)
+            
+            # update database after successful transport update
             current_owner = get_current_owner()
             if current_owner and transfer_pass_with_lock(current_owner['current_owner_id'], user.id):
                 # update bot status
                 await bot.update_status()
                 
-                # get user memo if available
-                memo = get_user_memo(user.id)
-                memo_text = f"\n**Vehicle:** {memo}" if memo else ""
-                
                 embed = discord.Embed(
                     title="Parking Pass Transferred",
-                    description=f"Parking pass has been given to <@{user.id}>{memo_text}",
+                    description=f"Parking pass has been given to <@{user.id}>\n**Vehicle:** {target_memo}",
                     color=discord.Color.green()
                 )
                 
-                await interaction.response.send_message(embed=embed)
+                await interaction.followup.send(embed=embed)
             else:
                 embed = discord.Embed(
                     title="Error",
-                    description="Failed to transfer parking pass. Please try again.",
-                    color=discord.Color.red()
+                    description="Transport updated but database sync failed. Please check status.",
+                    color=discord.Color.orange()
                 )
-                await interaction.response.send_message(embed=embed)
+                await interaction.followup.send(embed=embed)
             
         except Exception as e:
             embed = discord.Embed(
@@ -280,7 +303,7 @@ def setup_commands(bot: 'PoloSeek'):
                 description=f"Failed to transfer parking pass: {str(e)}",
                 color=discord.Color.red()
             )
-            await interaction.response.send_message(embed=embed)
+            await interaction.followup.send(embed=embed)
 
     @bot.tree.command(name="approve", description="Approve the next reservation for a specific user (Owner only)")
     async def approve_command(interaction: discord.Interaction, user: discord.Member):
@@ -295,6 +318,8 @@ def setup_commands(bot: 'PoloSeek'):
             return
         
         try:
+            await interaction.response.defer()
+            
             # get the next unapproved reservation for this user
             next_reservation = get_user_next_unapproved_reservation(user.id)
             
@@ -304,9 +329,10 @@ def setup_commands(bot: 'PoloSeek'):
                     description=f"<@{user.id}> has no pending reservations to approve.",
                     color=discord.Color.orange()
                 )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
+                await interaction.followup.send(embed=embed)
                 return
             
+            # approve the reservation in database
             approve_reservation_by_details(user.id, next_reservation['start_time'])
             
             # check if we should transfer immediately
@@ -315,19 +341,33 @@ def setup_commands(bot: 'PoloSeek'):
             
             current_owner = get_current_owner()
             
-            # transfer immediately if:
-            # 1. The reservation should start now or already started, AND
-            # 2. Current owner is the default owner (no active reservation)
+            # transfer immediately if reservation should start now or already started
             should_transfer_now = (start_time <= now and 
                                  current_owner and 
                                  current_owner['current_owner_id'] == DEFAULT_OWNER_ID)
             
+            transfer_msg = ""
+            
             if should_transfer_now:
-                if transfer_pass_with_lock(current_owner['current_owner_id'], user.id):
-                    await bot.update_status()
-                    transfer_msg = "\n\n**Pass transferred immediately** (no conflicts detected)"
+                # get target user memo for transport update
+                target_memo = get_user_memo(user.id)
+                if target_memo:
+                    try:
+                        # update transport
+                        transport = Scraper(notification_callback=interaction.followup)
+                        await transport.update_parking_pass(target_memo)
+                        
+                        # update database
+                        if transfer_pass_with_lock(current_owner['current_owner_id'], user.id):
+                            await bot.update_status()
+                            transfer_msg = "\n\n**Pass transferred immediately** (no conflicts detected)"
+                        else:
+                            transfer_msg = "\n\n**Transport updated but database sync failed**"
+                    except Exception as e:
+                        transfer_msg = f"\n\n**Immediate transfer failed:** {str(e)}"
+                        await interaction.followup.send(f"transport update failed: {str(e)}")
                 else:
-                    transfer_msg = "\n\n**Pass will transfer automatically** at the scheduled time"
+                    transfer_msg = "\n\n**No vehicle memo found for immediate transfer**"
             else:
                 transfer_msg = "\n\n**Pass will transfer automatically** at the scheduled time"
             
@@ -345,7 +385,7 @@ def setup_commands(bot: 'PoloSeek'):
                 color=discord.Color.green()
             )
             
-            await interaction.response.send_message(embed=embed)
+            await interaction.followup.send(embed=embed)
             await interaction.followup.send(f"<@{user.id}>, your reservation has been approved!")
             
         except Exception as e:
@@ -354,4 +394,4 @@ def setup_commands(bot: 'PoloSeek'):
                 description=f"Failed to approve reservation: {str(e)}",
                 color=discord.Color.red()
             )
-            await interaction.response.send_message(embed=embed)
+            await interaction.followup.send(embed=embed)

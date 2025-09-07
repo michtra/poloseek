@@ -10,10 +10,12 @@ from utils import ensure_cdt_timezone
 from database import (
     init_database, get_current_owner, transfer_pass_with_lock, 
     get_reservation_status, get_user_active_reservations, 
-    mark_reservation_inactive, is_reservation_ready_to_start
+    mark_reservation_inactive, is_reservation_ready_to_start,
+    get_user_memo, cleanup_old_reservations
 )
 from commands import setup_commands
 from enums import ReservationStatus
+from scraper import Scraper
 
 class PoloSeek(commands.Bot):
     def __init__(self):
@@ -33,6 +35,9 @@ class PoloSeek(commands.Bot):
         
         # background task to check for expired reservations
         self.check_expired_reservations.start()
+        
+        # background task to cleanup old reservations (daily)
+        self.cleanup_old_reservations.start()
         
         # update bot status
         await self.update_status()
@@ -102,6 +107,17 @@ class PoloSeek(commands.Bot):
         except Exception as e:
             print(f"Error checking expired reservations: {e}")
     
+    @tasks.loop(hours=24)
+    async def cleanup_old_reservations(self):
+        """Clean up old reservations daily"""
+        try:
+            # clean up reservations older than 7 days
+            cutoff_date = datetime.now(CDT) - timedelta(days=7)
+            cleanup_old_reservations(cutoff_date)
+            print(f"Cleaned up old reservations before {cutoff_date}")
+        except Exception as e:
+            print(f"Error cleaning up old reservations: {e}")
+    
     async def handle_expired_reservations(self, expired_reservations, current_owner_id, next_approved, now):
         """Handle expired reservations and return True if transfer occurred"""
         for reservation in expired_reservations:
@@ -114,8 +130,12 @@ class PoloSeek(commands.Bot):
                     # check if next approved reservation should start now or is already active
                     start_time = ensure_cdt_timezone(datetime.fromisoformat(next_approved['start_time']))
                     if start_time <= now:
-                        # transfer to the next approved user
-                        if transfer_pass_with_lock(current_owner_id, next_approved['user_id']):
+                        # transfer to the next approved user with transport scraper update
+                        success = await self.transfer_with_transport(
+                            current_owner_id, 
+                            next_approved['user_id']
+                        )
+                        if success:
                             await self.update_status()
                             await self.notify_transfer(
                                 reservation['user_id'], 
@@ -126,7 +146,8 @@ class PoloSeek(commands.Bot):
                             return True
                 
                 # no approved reservations ready, return to default owner
-                if transfer_pass_with_lock(current_owner_id, DEFAULT_OWNER_ID):
+                success = await self.transfer_with_transport(current_owner_id, DEFAULT_OWNER_ID)
+                if success:
                     await self.update_status()
                     await self.notify_return_to_default(reservation['user_id'])
                     return True
@@ -151,10 +172,47 @@ class PoloSeek(commands.Bot):
                     should_transfer = True
             
             if should_transfer:
-                # transfer to scheduled approved reservation
-                if transfer_pass_with_lock(current_owner_id, next_scheduled['user_id']):
+                # transfer to scheduled approved reservation with transport scraper update
+                success = await self.transfer_with_transport(
+                    current_owner_id, 
+                    next_scheduled['user_id']
+                )
+                if success:
                     await self.update_status()
                     await self.notify_scheduled_start(next_scheduled)
+    
+    async def transfer_with_transport(self, from_user_id: int, to_user_id: int) -> bool:
+        """Transfer parking pass with transport scraper update"""
+        try:
+            # get target user memo for transport update
+            target_memo = get_user_memo(to_user_id)
+            if not target_memo:
+                print(f"No vehicle memo found for user {to_user_id}, skipping transport update")
+                # still do database transfer for default owner
+                if to_user_id == DEFAULT_OWNER_ID:
+                    return transfer_pass_with_lock(from_user_id, to_user_id)
+                return False
+            
+            # create transport instance for automatic transfers
+            # Note: we can't use interaction.followup here, so we'll use print for notifications
+            transport = Scraper(notification_callback=self.log_transport_message)
+            
+            # update transport scraper first
+            await transport.update_parking_pass(target_memo)
+            
+            # update database after successful transport update
+            return transfer_pass_with_lock(from_user_id, to_user_id)
+            
+        except Exception as e:
+            print(f"Error transferring pass with transport: {e}")
+            # fallback to database-only transfer for critical cases
+            if to_user_id == DEFAULT_OWNER_ID:
+                return transfer_pass_with_lock(from_user_id, to_user_id)
+            return False
+    
+    async def log_transport_message(self, message: str):
+        """Log transport messages to console since we don't have interaction context"""
+        print(f"Transport: {message}")
     
     async def notify_transfer(self, from_user_id, to_user_id, reservation, reason):
         """Send notification about parking pass transfer"""

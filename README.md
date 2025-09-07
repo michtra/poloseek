@@ -56,7 +56,10 @@ The bot automatically creates the SQLite database (`poloseek.db`) with the follo
 - `user_id`: Discord user ID
 - `parking_memo`: String description (e.g., car details)
 
-### 5. Running the Bot
+### 5. Chrome Setup
+Ensure you are authenticated through NetID in the Default Chrome profile.
+
+### 6. Running the Bot
 ```bash
 python poloseek.py
 ```
@@ -145,9 +148,6 @@ INSERT INTO users (user_id, parking_memo) VALUES (1234567890123456789, 'nathan')
 This information will be displayed in status commands to help identify vehicles.
 
 ## Notes
-- Web scraping functionality is currently a placeholder in the `/refresh` command
-- The bot requires appropriate Discord permissions to function
 - SQLite database file will be created in the same directory as the bot script
 - All timestamps are stored in ISO format and converted to CDT for display
 - The `/give` command provides immediate transfer
-- The `/approve` command handles the normal reservation approval workflow
