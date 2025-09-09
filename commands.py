@@ -10,7 +10,7 @@ from database import (
     get_current_owner, update_parking_pass_owner, transfer_pass_with_lock,
     check_reservation_conflicts, create_reservation, get_reservations,
     get_user_next_unapproved_reservation, approve_reservation_by_details,
-    get_user_memo
+    get_user_memo, get_user_most_recent_approved_reservation, mark_reservation_inactive
 )
 from scraper import Scraper
 
@@ -235,7 +235,7 @@ def setup_commands(bot: 'PoloSeek'):
                 start = ensure_cdt_timezone(datetime.fromisoformat(reservation['start_time']))
                 end = ensure_cdt_timezone(datetime.fromisoformat(reservation['end_time']))
                 
-                # determine status
+                # determine status (no expired ones since those are filtered out as inactive)
                 if start <= now <= end:
                     if reservation['user_id'] == current_owner_id:
                         status = "🟢 ACTIVE"
@@ -246,8 +246,7 @@ def setup_commands(bot: 'PoloSeek'):
                         status = "✅ APPROVED"
                     else:
                         status = "🟡 PENDING"
-                else:
-                    status = "🔴 EXPIRED"
+                # Note: no else clause for EXPIRED since those reservations are filtered out
                 
                 reservation_list.append(
                     f"**{username}** {status}\n"
@@ -418,6 +417,83 @@ def setup_commands(bot: 'PoloSeek'):
             embed = discord.Embed(
                 title="Error",
                 description=f"Failed to approve reservation: {str(e)}",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed)
+    
+    @bot.tree.command(name="revoke", description="Revoke the most recent approved reservation for a user (Owner only)")
+    async def revoke_command(interaction: discord.Interaction, user: discord.Member):
+        """Revoke the most recent approved reservation for a specific user"""
+        if interaction.user.id != OWNER_ID:
+            embed = discord.Embed(
+                title="Access Denied",
+                description="This command is restricted to the bot owner.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        try:
+            await interaction.response.defer()
+            
+            # get the most recent approved reservation for this user
+            most_recent = get_user_most_recent_approved_reservation(user.id)
+            
+            if not most_recent:
+                embed = discord.Embed(
+                    title="No Reservation Found",
+                    description=f"{user.display_name} has no approved reservations to revoke.",
+                    color=discord.Color.orange()
+                )
+                await interaction.followup.send(embed=embed)
+                return
+            
+            # check if this reservation is currently active
+            now = datetime.now(CDT)
+            start_time = ensure_cdt_timezone(datetime.fromisoformat(most_recent['start_time']))
+            end_time = ensure_cdt_timezone(datetime.fromisoformat(most_recent['end_time']))
+            current_owner = get_current_owner()
+            
+            is_currently_active = (start_time <= now <= end_time and 
+                                current_owner and 
+                                current_owner['current_owner_id'] == user.id)
+            
+            # mark the reservation as inactive
+            mark_reservation_inactive(user.id, most_recent['start_time'])
+            
+            transfer_msg = ""
+            
+            # if this was the active reservation, transfer pass back to default owner
+            if is_currently_active:
+                try:
+                    # attempt to transfer back to default owner with transport update
+                    success = await bot.transfer_with_transport(user.id, DEFAULT_OWNER_ID)
+                    if success:
+                        await bot.update_status()
+                        transfer_msg = "\n\n**Pass returned to default owner** (active reservation revoked)"
+                    else:
+                        transfer_msg = "\n\n**Transfer failed** - manual intervention may be required"
+                except Exception as e:
+                    transfer_msg = f"\n\n**Transfer failed:** {str(e)}"
+                    await interaction.followup.send(f"Transport transfer failed: {str(e)}")
+            
+            # get user memo if available
+            memo = get_user_memo(user.id)
+            memo_text = f"\n**Vehicle:** {memo}" if memo else ""
+            
+            embed = discord.Embed(
+                title="Reservation Revoked",
+                description=f"**Revoked for:** {user.display_name}{memo_text}\n**Start:** {start_time.strftime('%B %d, %Y at %I:%M %p CDT')}\n**End:** {end_time.strftime('%B %d, %Y at %I:%M %p CDT')}\n**Status:** {'Was Active' if is_currently_active else 'Was Scheduled'}{transfer_msg}",
+                color=discord.Color.red()
+            )
+            
+            ping_message = f"<@{user.id}>, your approved reservation has been revoked by the owner."
+            await interaction.followup.send(content=ping_message, embed=embed)
+            
+        except Exception as e:
+            embed = discord.Embed(
+                title="Error",
+                description=f"Failed to revoke reservation: {str(e)}",
                 color=discord.Color.red()
             )
             await interaction.followup.send(embed=embed)

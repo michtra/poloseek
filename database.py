@@ -214,11 +214,11 @@ def create_reservation(user_id: int, start_time: datetime, end_time: datetime):
     conn.close()
 
 def get_reservations() -> List[Dict]:
-    """Get all reservations"""
+    """Get all active reservations"""
     conn = sqlite3.connect('poloseek.db')
     cursor = conn.cursor()
     cursor.execute(
-        'SELECT user_id, start_time, end_time, approved FROM reservations ORDER BY datetime(start_time)'
+        'SELECT user_id, start_time, end_time, approved FROM reservations WHERE active_status = TRUE ORDER BY datetime(start_time)'
     )
     reservations = cursor.fetchall()
     conn.close()
@@ -416,3 +416,21 @@ def cleanup_old_reservations(cutoff_date: datetime):
     
     print(f"Deleted {deleted_count} old reservation records")
     return deleted_count
+
+def get_user_most_recent_approved_reservation(user_id: int) -> Optional[Dict]:
+    """Get the most recent approved reservation for a specific user"""
+    conn = sqlite3.connect('poloseek.db')
+    cursor = conn.cursor()
+    cursor.execute(
+        '''SELECT user_id, start_time, end_time 
+        FROM reservations 
+        WHERE user_id = ? AND active_status = TRUE AND approved = TRUE
+        ORDER BY datetime(start_time) DESC LIMIT 1''',
+        (user_id,)
+    )
+    result = cursor.fetchone()
+    conn.close()
+    
+    if result:
+        return {'user_id': result[0], 'start_time': result[1], 'end_time': result[2]}
+    return None

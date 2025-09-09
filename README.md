@@ -94,9 +94,9 @@ Request a parking pass reservation
 ### `/reservations`
 Lists all active and pending reservations with status indicators:
 - 🟢 **ACTIVE** (currently happening)
+- 📅 **SCHEDULED** (currently happening but the user doesn't have the pass yet)
 - ✅ **APPROVED** (future reservation that's been approved)
 - 🟡 **PENDING** (future reservation awaiting approval)
-- 🔴 **EXPIRED** (past end time)
 
 ### `/give <user>`
 **Owner only** - Assigns parking pass to specified user immediately (does not affect reservations)
@@ -109,6 +109,13 @@ Lists all active and pending reservations with status indicators:
 - Automatically transfers at scheduled start time
 - Clears other pending reservations for the approved user
 - Sends notification to approved user
+
+### `/revoke <user>`
+**Owner only** - Revokes the most recent approved reservation for a specific user
+- Marks the reservation as inactive (removes from reservation list)
+- If the revoked reservation is currently active, transfers pass back to default owner
+- Sends notification to affected user
+- Handles both scheduled and active reservations
 
 ## Bot Status
 The bot's status automatically updates to show:
