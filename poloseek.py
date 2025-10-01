@@ -216,34 +216,48 @@ class PoloSeek(commands.Bot):
     
     async def notify_transfer(self, from_user_id, to_user_id, reservation, reason):
         """Send notification about parking pass transfer"""
-        channel = self.get_channel(CHANNEL_ID)
-        if not channel:
-            return
-        
-        from_user = self.get_user(from_user_id)
-        to_user = self.get_user(to_user_id)
-        
-        from_username = from_user.display_name if from_user else f"User {from_user_id}"
-        to_username = to_user.display_name if to_user else f"User {to_user_id}"
-        
-        start_time = ensure_cdt_timezone(datetime.fromisoformat(reservation['start_time']))
-        end_time = ensure_cdt_timezone(datetime.fromisoformat(reservation['end_time']))
-        
-        if reason == "expired":
-            embed = discord.Embed(
-                title="Parking Pass Transferred",
-                description=f"{from_username}'s reservation expired.\nPass transferred to {to_username} for approved reservation.\n\n**New Reservation:** {start_time.strftime('%m/%d %I:%M %p')} - {end_time.strftime('%m/%d %I:%M %p')}",
-                color=discord.Color.blue()
-            )
-        else:
-            embed = discord.Embed(
-                title="Parking Pass Transferred",
-                description=f"Pass transferred to {to_username}.\n\n**Reservation:** {start_time.strftime('%m/%d %I:%M %p')} - {end_time.strftime('%m/%d %I:%M %p')}",
-                color=discord.Color.blue()
-            )
-        
-        ping_message = f"<@{to_user_id}>, your scheduled reservation is now active!"
-        await channel.send(content=ping_message, embed=embed)
+        try:
+            channel = self.get_channel(CHANNEL_ID)
+            if not channel:
+                print(f"Channel {CHANNEL_ID} not found.")
+                return
+            
+            permissions = channel.permissions_for(channel.guild.me)
+            if not permissions.send_messages:
+                print(f"Bot lacks 'Send Messages' permission in {channel.name}")
+                return
+            if not permissions.embed_links:
+                print(f"Bot lacks 'Embed Links' permission in {channel.name}")
+                return
+            
+            from_user = self.get_user(from_user_id)
+            to_user = self.get_user(to_user_id)
+            
+            from_username = from_user.display_name if from_user else f"User {from_user_id}"
+            to_username = to_user.display_name if to_user else f"User {to_user_id}"
+            
+            start_time = ensure_cdt_timezone(datetime.fromisoformat(reservation['start_time']))
+            end_time = ensure_cdt_timezone(datetime.fromisoformat(reservation['end_time']))
+            
+            if reason == "expired":
+                embed = discord.Embed(
+                    title="Parking Pass Transferred",
+                    description=f"{from_username}'s reservation expired.\nPass transferred to {to_username} for approved reservation.\n\n**New Reservation:** {start_time.strftime('%m/%d %I:%M %p')} - {end_time.strftime('%m/%d %I:%M %p')}",
+                    color=discord.Color.blue()
+                )
+            else:
+                embed = discord.Embed(
+                    title="Parking Pass Transferred",
+                    description=f"Pass transferred to {to_username}.\n\n**Reservation:** {start_time.strftime('%m/%d %I:%M %p')} - {end_time.strftime('%m/%d %I:%M %p')}",
+                    color=discord.Color.blue()
+                )
+            
+            ping_message = f"<@{to_user_id}>, your scheduled reservation is now active!"
+            await channel.send(content=ping_message, embed=embed)
+        except discord.errors.Forbidden as e:
+            print(f"403 Forbidden in notify_transfer: {e}")
+        except Exception as e:
+            print(f"Error in notify_transfer: {e}")
     
     async def notify_return_to_default(self, from_user_id):
         """Send notification about return to default owner"""
