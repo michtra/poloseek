@@ -61,7 +61,7 @@ Ensure you are authenticated through NetID in the Default Chrome profile.
 
 ### 6. Running the Bot
 ```bash
-python poloseek.py
+python main.py
 ```
 
 ## Slash Commands
