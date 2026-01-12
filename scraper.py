@@ -57,7 +57,7 @@ class Scraper:
             
             # click login button
             login_button = WebDriverWait(self.driver, 10).until(
-                EC.element_to_be_clickable((By.XPATH, "/html/body/div[2]/form/div[3]/div/div[3]/div[2]/div/p[2]/input"))
+                EC.element_to_be_clickable((By.XPATH, "/html/body/div[2]/form/div[3]/div/div[4]/div[2]/div/p[2]/input"))
             )
             login_button.click()
             
