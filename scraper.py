@@ -27,7 +27,9 @@ class Scraper:
     async def _notify_async(self, message):
         try:
             if self.notify:
-                if inspect.iscoroutinefunction(self.notify):
+                if hasattr(self.notify, 'send'):
+                    await self.notify.send(message)
+                elif inspect.iscoroutinefunction(self.notify):
                     await self.notify(message)
                 else:
                     self.notify(message)
