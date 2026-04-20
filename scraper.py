@@ -65,10 +65,21 @@ class Scraper:
             EC.presence_of_element_located((By.ID, "active-permits-heading"))
         )
 
+    def _dismiss_tour(self):
+        try:
+            close = WebDriverWait(self.driver, 5).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "button.framer-tour-close"))
+            )
+            close.click()
+        except TimeoutException:
+            pass
+
     def _open_manage_vehicles(self):
-        WebDriverWait(self.driver, 10).until(
-            EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Manage Vehicles')]"))
-        ).click()
+        self._dismiss_tour()
+        btn = WebDriverWait(self.driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, "//button[contains(., 'Manage Vehicles')]"))
+        )
+        self.driver.execute_script("arguments[0].click();", btn)
 
         WebDriverWait(self.driver, 10).until(
             EC.presence_of_element_located((By.XPATH, "//div[@role='dialog']"))
@@ -102,7 +113,6 @@ class Scraper:
 
     async def refresh_current_user(self):
         try:
-            await self._notify_async("Starting parking pass refresh...")
             self._setup_driver()
             self._login()
             self._open_manage_vehicles()
@@ -118,7 +128,6 @@ class Scraper:
 
     async def update_parking_pass(self, target_memo):
         try:
-            await self._notify_async(f"Starting parking pass update to: {target_memo}")
             self._setup_driver()
             self._login()
             self._open_manage_vehicles()
