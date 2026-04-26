@@ -19,12 +19,14 @@ def parse_datetime_input(time_str: str, reference_date: datetime = None) -> date
     if reference_date is None:
         reference_date = datetime.now(CDT)
     
-    time_str = time_str.strip().lower()
+    time_str = time_str.strip().upper()
     
     # accept a bunch of formats
     formats = [
         "%Y-%m-%d %H:%M",
+        "%m/%d/%Y %I:%M %p",
         "%m/%d/%Y %H:%M",
+        "%m/%d %I:%M %p",
         "%m/%d %H:%M",
         "%H:%M",
         "%I:%M %p",
@@ -42,6 +44,9 @@ def parse_datetime_input(time_str: str, reference_date: datetime = None) -> date
             elif fmt == "%m/%d %H:%M":
                 # month/day with current year
                 parsed = datetime.strptime(f"{reference_date.year}/{time_str}", "%Y/%m/%d %H:%M")
+                return CDT.localize(parsed)
+            elif fmt == "%m/%d %I:%M %p":
+                parsed = datetime.strptime(f"{reference_date.year}/{time_str}", "%Y/%m/%d %I:%M %p")
                 return CDT.localize(parsed)
             else:
                 parsed = datetime.strptime(time_str, fmt)

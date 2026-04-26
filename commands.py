@@ -1,7 +1,7 @@
 """Slash commands for PoloSeek"""
 import discord
 from discord.ext import commands
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Optional
 
 from config import OWNER_ID, DEFAULT_OWNER_ID, CDT
@@ -16,6 +16,117 @@ from scraper import Scraper
 
 if TYPE_CHECKING:
     from poloseek import PoloSeek
+
+
+def make_request_modal(bot: 'PoloSeek', target_user: discord.Member, is_owner_request: bool, requesting_user_id: int):
+    now = datetime.now(CDT)
+    end_default = now + timedelta(minutes=1)
+    time_fmt = "%-m/%-d %-I:%M %p"
+
+    class RequestModal(discord.ui.Modal, title="Request Parking Pass"):
+        start_time = discord.ui.TextInput(
+            label="Start",
+            default=now.strftime(time_fmt),
+            required=True,
+            max_length=32
+        )
+        end_time = discord.ui.TextInput(
+            label="End",
+            default=end_default.strftime(time_fmt),
+            required=True,
+            max_length=32
+        )
+
+        async def on_submit(self, interaction: discord.Interaction):
+            try:
+                now = datetime.now(CDT)
+                start_dt = parse_datetime_input(str(self.start_time), now)
+                end_dt = parse_datetime_input(str(self.end_time), now)
+
+                if start_dt <= now:
+                    embed = discord.Embed(
+                        title="Invalid Time",
+                        description="Start time must be in the future.",
+                        color=discord.Color.red()
+                    )
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    return
+
+                if end_dt <= start_dt:
+                    embed = discord.Embed(
+                        title="Invalid Time",
+                        description="End time must be after start time.",
+                        color=discord.Color.red()
+                    )
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    return
+
+                conflicts = check_reservation_conflicts(start_dt, end_dt)
+                if conflicts:
+                    conflict_list = []
+                    for conflict in conflicts:
+                        username = await bot.get_user_display_name(conflict['user_id'])
+                        start = ensure_cdt_timezone(datetime.fromisoformat(conflict['start_time']))
+                        end = ensure_cdt_timezone(datetime.fromisoformat(conflict['end_time']))
+                        conflict_list.append(f"- {username}: {start.strftime('%m/%d %I:%M %p')} - {end.strftime('%m/%d %I:%M %p')}")
+
+                    embed = discord.Embed(
+                        title="Time Conflict",
+                        description="The requested time conflicts with existing approved reservations:\n\n" + "\n".join(conflict_list),
+                        color=discord.Color.orange()
+                    )
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    return
+
+                create_reservation(target_user.id, start_dt, end_dt)
+
+                if requesting_user_id == OWNER_ID:
+                    approve_reservation_by_details(target_user.id, start_dt.isoformat())
+                    approval_status = "**Status:** AUTOMATICALLY APPROVED"
+                else:
+                    approval_status = "**Status:** PENDING APPROVAL"
+
+                if is_owner_request:
+                    description = (
+                        f"**Requested by:** <@{requesting_user_id}> for <@{target_user.id}>\n"
+                        f"**Start:** {start_dt.strftime('%B %d, %Y at %I:%M %p CDT')}\n"
+                        f"**End:** {end_dt.strftime('%B %d, %Y at %I:%M %p CDT')}\n"
+                        f"{approval_status}"
+                    )
+                    mention_message = f"<@{target_user.id}>, a parking pass reservation has been created for you!"
+                else:
+                    description = (
+                        f"**Requested by:** <@{target_user.id}>\n"
+                        f"**Start:** {start_dt.strftime('%B %d, %Y at %I:%M %p CDT')}\n"
+                        f"**End:** {end_dt.strftime('%B %d, %Y at %I:%M %p CDT')}\n"
+                        f"{approval_status}"
+                    )
+                    mention_message = f"<@{OWNER_ID}>, you have a new parking pass request!"
+
+                embed = discord.Embed(
+                    title="Reservation Created",
+                    description=description,
+                    color=discord.Color.blue()
+                )
+                await interaction.response.send_message(content=mention_message, embed=embed)
+
+            except ValueError as e:
+                embed = discord.Embed(
+                    title="Invalid Time Format",
+                    description=f"Could not parse time input: {str(e)}\n\nTry a format like `4/28 9:00 AM` or `4/28/2026 14:00`.",
+                    color=discord.Color.red()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+            except Exception as e:
+                embed = discord.Embed(
+                    title="Error",
+                    description=f"Failed to create reservation: {str(e)}",
+                    color=discord.Color.red()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    return RequestModal()
+
 
 def setup_commands(bot: 'PoloSeek'):
     """Setup all slash commands"""
@@ -106,108 +217,22 @@ def setup_commands(bot: 'PoloSeek'):
             await interaction.followup.send(embed=embed)
 
     @bot.tree.command(name="request", description="Request a parking pass reservation")
-    async def request_command(interaction: discord.Interaction, start_time: str, end_time: str, user: Optional[discord.Member] = None):
+    async def request_command(interaction: discord.Interaction, user: Optional[discord.Member] = None):
         """Request a parking pass reservation"""
-        try:
-            # determine who the reservation is for
-            if user is not None:
-                # only bot owner can request on behalf of others
-                if interaction.user.id != OWNER_ID:
-                    embed = discord.Embed(
-                        title="Access Denied",
-                        description="Only the bot owner can request reservations on behalf of other users.",
-                        color=discord.Color.red()
-                    )
-                    await interaction.response.send_message(embed=embed, ephemeral=True)
-                    return
-                target_user = user
-                is_owner_request = True
-            else:
-                target_user = interaction.user
-                is_owner_request = False
-            
-            # parse time inputs
-            now = datetime.now(CDT)
-            start_dt = parse_datetime_input(start_time, now)
-            end_dt = parse_datetime_input(end_time, now)
-            
-            # validate times
-            if start_dt <= now:
-                embed = discord.Embed(
-                    title="Invalid Time",
-                    description="Start time must be in the future.",
-                    color=discord.Color.red()
-                )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-                return
-            
-            if end_dt <= start_dt:
-                embed = discord.Embed(
-                    title="Invalid Time",
-                    description="End time must be after start time.",
-                    color=discord.Color.red()
-                )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-                return
-            
-            # check for conflicts (only with approved reservations)
-            conflicts = check_reservation_conflicts(start_dt, end_dt)
-            if conflicts:
-                conflict_list = []
-                for conflict in conflicts:
-                    username = await bot.get_user_display_name(conflict['user_id'])
-                    start = ensure_cdt_timezone(datetime.fromisoformat(conflict['start_time']))
-                    end = ensure_cdt_timezone(datetime.fromisoformat(conflict['end_time']))
-                    conflict_list.append(f"• {username}: {start.strftime('%m/%d %I:%M %p')} - {end.strftime('%m/%d %I:%M %p')}")
-                
-                embed = discord.Embed(
-                    title="Time Conflict",
-                    description=f"The requested time conflicts with existing approved reservations:\n\n" + "\n".join(conflict_list),
-                    color=discord.Color.orange()
-                )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-                return
-            
-            # create reservation
-            create_reservation(target_user.id, start_dt, end_dt)
+        if user is not None and interaction.user.id != OWNER_ID:
+            embed = discord.Embed(
+                title="Access Denied",
+                description="Only the bot owner can request reservations on behalf of other users.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
 
-            # auto-approve if request is made by the owner
-            if interaction.user.id == OWNER_ID:
-                approve_reservation_by_details(target_user.id, start_dt.isoformat())
-                approval_status = "**Status:** ✅ AUTOMATICALLY APPROVED"
-            else:
-                approval_status = "**Status:** 🟡 PENDING APPROVAL"
-            
-            # create description based on who made the request
-            if is_owner_request:
-                description = f"**Requested by:** <@{interaction.user.id}> for <@{target_user.id}>\n**Start:** {start_dt.strftime('%B %d, %Y at %I:%M %p CDT')}\n**End:** {end_dt.strftime('%B %d, %Y at %I:%M %p CDT')}\n{approval_status}"
-                mention_message = f"<@{target_user.id}>, a parking pass reservation has been created for you!"
-            else:
-                description = f"**Requested by:** <@{target_user.id}>\n**Start:** {start_dt.strftime('%B %d, %Y at %I:%M %p CDT')}\n**End:** {end_dt.strftime('%B %d, %Y at %I:%M %p CDT')}\n{approval_status}"
-                mention_message = f"<@{OWNER_ID}>, you have a new parking pass request!"
-            
-            embed = discord.Embed(
-                title="Reservation Created",
-                description=description,
-                color=discord.Color.blue()
-            )
-            
-            await interaction.response.send_message(content=mention_message, embed=embed)
-            
-        except ValueError as e:
-            embed = discord.Embed(
-                title="Invalid Time Format",
-                description=f"Could not parse time input: {str(e)}\n\nSupported formats:\n• `YYYY-MM-DD HH:MM`\n• `MM/DD/YYYY HH:MM`\n• `MM/DD HH:MM`\n• `HH:MM` or `H:MM AM/PM`",
-                color=discord.Color.red()
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-        except Exception as e:
-            embed = discord.Embed(
-                title="Error",
-                description=f"Failed to create reservation: {str(e)}",
-                color=discord.Color.red()
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+        target_user = user if user is not None else interaction.user
+        is_owner_request = user is not None
+
+        modal = make_request_modal(bot, target_user, is_owner_request, interaction.user.id)
+        await interaction.response.send_modal(modal)
 
     @bot.tree.command(name="reservations", description="Show all active parking pass reservations")
     async def reservations_command(interaction: discord.Interaction):
