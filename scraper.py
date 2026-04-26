@@ -42,23 +42,13 @@ class Scraper:
         WebDriverWait(self.driver, 20).until(
             EC.any_of(
                 EC.presence_of_element_located((By.ID, "active-permits-heading")),
-                EC.element_to_be_clickable((By.ID, "loginButton")),
+                EC.element_to_be_clickable((By.LINK_TEXT, "Texas A&M University NetID")),
             )
         )
 
         if self.driver.find_elements(By.ID, "active-permits-heading"):
             return
 
-        existing_handles = set(self.driver.window_handles)
-        self.driver.find_element(By.ID, "loginButton").click()
-
-        def sso_ready(d):
-            new = set(d.window_handles) - existing_handles
-            if new:
-                d.switch_to.window(new.pop())
-            return d.find_elements(By.LINK_TEXT, "Texas A&M University NetID")
-
-        WebDriverWait(self.driver, 15).until(sso_ready)
         self.driver.find_element(By.LINK_TEXT, "Texas A&M University NetID").click()
 
         WebDriverWait(self.driver, 30).until(
